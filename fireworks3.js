@@ -309,10 +309,6 @@ var modelArray = new Float32Array([
 /**
  * @type {WebGLVertexArrayObject}
  */
-var solidVAB;
-/**
- * @type {WebGLVertexArrayObject}
- */
  var glowVAB;
 /**
  *  @type {WebGLBuffer}
@@ -326,30 +322,6 @@ var lightBuffer;
  *  @type {WebGLBuffer}
  */
 var modelBuffer;
-/**
- * @type {WebGLProgram}
- */
-var solidProgram;
-var soildVertSource = `#version 300 es
-uniform mat4 world;
-in mat4 model;
-in vec3 color;
-in vec2 pos;
-out vec3 _color;
-void main(){
-    gl_Position = world * model * vec4(pos, 0.0, 1.0); //
-    _color = color;
-}`;
-var solidFragSource = `#version 300 es
-
-precision highp float;
-
-in vec3 _color;
-out vec4 o_color;
-void main(){
-    o_color = vec4(_color, 1.0);
-}
-`
 var glowProgram;
 var glowVertSource = `#version 300 es
 uniform mat4 world;
@@ -363,7 +335,7 @@ out vec2 _pos;
 out float _intsy;
 out float _lum;
 void main(){
-    gl_Position = world * model * vec4(pos * (lum * 10.0), 0.0, 1.0);
+    gl_Position = world * model * vec4(pos, 0.0, 1.0);
     _pos = pos;
     _lum = lum;
     _intsy = intsy;
@@ -383,9 +355,8 @@ float dst;
 void main(){
     dst = 1.0 - sqrt(_pos.x * _pos.x + _pos.y * _pos.y);
     light = pow(_lum, _intsy);
-    o_color = vec4(_color * light, pow(dst, _intsy));
-}
-`
+    o_color = vec4(_color * light, 1.0);
+}`;
 
 var cameraMat = Matrix.getIdenity(4);
 /**
@@ -468,7 +439,6 @@ function startGL(){
     gl.enable(gl.CULL_FACE);
     updateCanvasSize();
 
-    solidVAB = gl.createVertexArray();
     glowVAB = gl.createVertexArray();
     matrixBuffer = gl.createBuffer();
     lightBuffer = gl.createBuffer();
@@ -518,48 +488,6 @@ function startGL(){
     gl.vertexAttribDivisor(glumLoc, 1);
     gl.vertexAttribPointer(gintsyLoc, 1, gl.FLOAT, false, 5 * 4, 4 * 4);
     gl.vertexAttribDivisor(gintsyLoc, 1);
-
-    gl.bindVertexArray(null);
-
-
-
-
-    solidProgram = buildProgram(gl, soildVertSource, solidFragSource);
-
-    gl.useProgram(solidProgram);
-
-    gl.bindVertexArray(solidVAB);
-    solidWorldUniform = gl.getUniformLocation(solidProgram, "world");
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, modelBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, modelArray, gl.STATIC_DRAW);
-
-    var posLoc = gl.getAttribLocation(solidProgram, "pos");
-    var colLoc = gl.getAttribLocation(solidProgram, "color");
-    var matLoc = gl.getAttribLocation(solidProgram, "model");
-
-    gl.enableVertexAttribArray(posLoc);
-    gl.enableVertexAttribArray(colLoc);
-
-    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 2 * 4, 0);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, matrixBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, MATRIX_BYTE_COUNT * MAX_SPARK_COUNT, gl.DYNAMIC_DRAW);
-
-    for(var i = 0; i < 4; i++){
-        var cLoc = matLoc + i;
-        var offset = i * 16;
-        
-        gl.enableVertexAttribArray(cLoc);
-        gl.vertexAttribPointer(cLoc, 4, gl.FLOAT, false, MATRIX_BYTE_COUNT, offset);
-        gl.vertexAttribDivisor(cLoc, 1);
-    }
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, lightBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, lightArray.byteLength, gl.DYNAMIC_DRAW);
-
-    gl.vertexAttribPointer(colLoc, 3, gl.FLOAT, false, 5 * 4, 0);
-    gl.vertexAttribDivisor(colLoc, 1);
 
     gl.bindVertexArray(null);
     
@@ -928,8 +856,6 @@ function draw(time){
 
     gl.useProgram(glowProgram);
     gl.uniformMatrix4fv(glowWorldUniform, false, camRotMat.getArray(true));
-    gl.useProgram(solidProgram);
-    gl.uniformMatrix4fv(solidWorldUniform, false, camRotMat.getArray(true));
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     Spark.sparks.forEach((spark) => {
         spark.update((time - oldTime) / 1000);
@@ -940,6 +866,9 @@ function draw(time){
 
     gl.bindBuffer(gl.ARRAY_BUFFER, matrixBuffer);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, matrixArray);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, lightBuffer);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, lightArray);
 
     // Draw glow
     gl.enable(gl.BLEND);
@@ -950,20 +879,6 @@ function draw(time){
 
     gl.bindVertexArray(glowVAB);
     gl.useProgram(glowProgram);
-
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, MAX_SPARK_COUNT);
-    gl.bindVertexArray(null);
-
-    // Draw solid sparks
-    gl.clear(gl.DEPTH_BUFFER_BIT);
-    gl.disable(gl.BLEND);
-    gl.enable(gl.DEPTH_TEST);
-
-    gl.useProgram(solidProgram);
-    gl.bindVertexArray(solidVAB);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, lightBuffer);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, lightArray);
 
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, MAX_SPARK_COUNT);
     gl.bindVertexArray(null);
