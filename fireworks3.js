@@ -297,6 +297,17 @@ var matrixArray = new Float32Array(MAX_SPARK_COUNT * 16);
 
 var lightArray = new Float32Array(MAX_SPARK_COUNT * 5);// red, green, blue, luminance, and intensity inputs per spark
 
+var screenPosData = new Float32Array([
+    -1.0, 1.0,
+    1.0, -1.0,
+    1.0, 1.0,
+    -1.0, -1.0
+]);
+var screenFaceData = new Uint16Array([
+    0, 1, 2,
+    0, 3, 1
+])
+
 var modelArray = new Float32Array([
     0.5, 0.0,
     -0.25, 0.43,
@@ -306,10 +317,31 @@ var modelArray = new Float32Array([
     0.25, -0.43,
     0.25, 0.43
 ]);
+
+var baseImage;
+var lightImage;
+var baseBuffer;
+
+var blur1Image;
+var blur2Image;
+var blur1Buffer;
+var blur2Buffer;
+
+
+var textures = [];
+var framebuffers = [];
 /**
  * @type {WebGLVertexArrayObject}
  */
  var glowVAB;
+ /**
+ * @type {WebGLVertexArrayObject}
+ */
+  var blurVAB;
+/**
+ * @type {WebGLVertexArrayObject}
+ */
+    var combineVAB;
 /**
  *  @type {WebGLBuffer}
  */
@@ -321,6 +353,14 @@ var lightBuffer;
 /**
  *  @type {WebGLBuffer}
  */
+ var screenPosBuffer;
+ /**
+ *  @type {WebGLBuffer}
+ */
+  var screenFaceBuffer;
+  /**
+  *  @type {WebGLBuffer}
+  */
 var modelBuffer;
 var glowProgram;
 var glowVertSource = `#version 300 es
@@ -349,24 +389,68 @@ in vec3 _color;
 in vec2 _pos;
 in float _intsy;
 in float _lum;
-out vec4 o_color;
+layout(location = 0) out vec4 o_color0;
+layout(location = 1) out vec4 o_color1;
 float light;
-float dst;
 void main(){
-    dst = 1.0 - sqrt(_pos.x * _pos.x + _pos.y * _pos.y);
     light = pow(_lum, _intsy);
-    o_color = vec4(_color * light, 1.0);
+    o_color0 = vec4(_color * _lum, 1.0);
+    o_color1 = vec4( _color * _color * _color * _color * light, 1.0);
+}`;
+var blurProgram;
+var combineProgram;
+var screenVertSource = `#version 300 es
+in vec2 pos;
+out vec2 f_uv;
+void main(){
+    f_uv = (pos + 1.0) / 2.0;// convert screen space to texture space
+    gl_Position = vec4(pos, 0.0, 1.0);
+}`
+var blurFragSource = `#version 300 es
+precision highp float;
+in vec2 f_uv;
+out vec4 o_color;
+uniform sampler2D u_input;
+uniform bool u_horizontal;
+float weight[5] = float[] (0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+vec2 offset;
+void main(){
+    float pixel_size = 2.0/float(textureSize(u_input, 0).x);
+    if(u_horizontal){
+        offset = vec2(pixel_size, 0.0);
+    }else{
+        offset = vec2(0.0, pixel_size);
+    }
+
+    vec3 color = texture(u_input, f_uv).rgb * weight[0];
+    for(int i = 1; i < 5; i++){
+        color += texture(u_input, f_uv + offset * float(i)).rgb * weight[i];
+        color += texture(u_input, f_uv - offset * float(i)).rgb * weight[i];
+    }
+    o_color = vec4(color, 1.0);
+}`;
+var combineFragSource = `#version 300 es
+precision highp float;
+in vec2 f_uv;
+out vec4 o_color;
+uniform sampler2D u_base;
+uniform sampler2D u_bloom;
+void main(){
+    vec3 color = texture(u_base, f_uv).rgb + texture(u_bloom, f_uv).rgb;
+    o_color = vec4(color, 1.0);
 }`;
 
 var cameraMat = Matrix.getIdenity(4);
 /**
  * @type {WebGLUniformLocation}
  */
-var solidWorldUniform;
-/**
- * @type {WebGLUniformLocation}
- */
  var glowWorldUniform;
+ var blurInputUniform;
+ var blurWeightUniform;
+ var blurHorizontalUniform;
+ var combineBaseUniform;
+ var combineBloomUniform;
+
 
 	// Camera Varibles
     var feildOfView = 90;// In degrees
@@ -419,6 +503,7 @@ function updateCanvasSize(){
     canvas.width = width;
     canvas.height = height;
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    // update buffer sizes
     prepareCamera();
 }
 
@@ -440,11 +525,17 @@ function startGL(){
     updateCanvasSize();
 
     glowVAB = gl.createVertexArray();
+    blurVAB = gl.createVertexArray();
+    combineVAB = gl.createVertexArray();
     matrixBuffer = gl.createBuffer();
     lightBuffer = gl.createBuffer();
     modelBuffer = gl.createBuffer();
+    screenPosBuffer = gl.createBuffer();
+    screenFaceBuffer = gl.createBuffer();
+
 
     glowProgram = buildProgram(gl, glowVertSource, glowFragSource);
+
 
     gl.useProgram(glowProgram);
 
@@ -489,10 +580,142 @@ function startGL(){
     gl.vertexAttribPointer(gintsyLoc, 1, gl.FLOAT, false, 5 * 4, 4 * 4);
     gl.vertexAttribDivisor(gintsyLoc, 1);
 
+
+
+    gl.bindVertexArray(blurVAB);
+    blurProgram = buildProgram(gl, screenVertSource, blurFragSource);
+    gl.useProgram(blurProgram);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER,screenPosBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, screenPosData, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, screenFaceBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, screenFaceData, gl.STATIC_DRAW);
+
+    var bPos = gl.getAttribLocation(blurProgram, 'pos');
+
+    gl.enableVertexAttribArray(bPos);
+    gl.vertexAttribPointer(bPos, 2, gl.FLOAT, false, 8, 0);
+
+    blurInputUniform = gl.getUniformLocation(blurProgram, 'u_input');
+    blurHorizontalUniform = gl.getUniformLocation(blurProgram, 'u_horizontal');
+
+    gl.bindVertexArray(combineVAB);
+    combineProgram = buildProgram(gl, screenVertSource, combineFragSource);
+    gl.useProgram(combineProgram);
+
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER,screenPosBuffer);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, screenFaceBuffer);
+    
+    var cPos = gl.getAttribLocation(combineProgram, 'pos');
+
+    gl.enableVertexAttribArray(cPos);
+    gl.vertexAttribPointer(cPos, 2, gl.FLOAT, false, 8, 0);
+
+    combineBaseUniform = gl.getUniformLocation(combineProgram, 'u_base');
+    combineBloomUniform = gl.getUniformLocation(combineProgram, 'u_bloom');
+
+    gl.bindVertexArray(null);
+
+
     gl.bindVertexArray(null);
     
+    baseImage = buildTexture();
+    blur1Image = buildTexture();
+    blur2Image = buildTexture();
+    lightImage = buildTexture();
+
+    textures.push(baseImage, lightImage, blur1Image, blur2Image);
+
+    baseBuffer = gl.createFramebuffer();
+    blur1Buffer = gl.createFramebuffer();
+    blur2Buffer = gl.createFramebuffer();
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, baseBuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, baseImage, 0);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, lightImage, 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, blur1Buffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, blur2Image, 0);
     
+    gl.bindFramebuffer(gl.FRAMEBUFFER, blur2Buffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, blur1Image, 0);
+    
+    framebuffers.push(baseBuffer, blur1Buffer, blur2Buffer);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+
     prepareCamera();
+}
+
+function clear(){
+    
+    gl.clearColor(0, 0, 0, 0);
+    framebuffers.forEach((val) => {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, val);
+        gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
+    })
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.clearColor(0, 0, 1, 1)
+    gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
+}
+
+function buildTexture(){
+    var texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.drawingBufferWidth, gl.drawingBufferHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return texture;
+}
+
+function buildBuffer(){
+    var buffer = gl.createBuffer();
+    var depthBuffer = gl.createRenderbuffer();
+
+    gl.bindBuffer(gl.FRAMEBUFFER, buffer);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+    return buffer;
+}
+
+function blur(times){
+    
+    gl.bindVertexArray(blurVAB);
+    gl.useProgram(blurProgram);
+    
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, blur1Image);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, blur2Image);
+    
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, lightImage);
+
+    for(var i =0; i < times; i++){
+
+        gl.uniform1i(blurHorizontalUniform, 0);
+        if(i == 0){
+            gl.uniform1i(blurInputUniform, 2);
+        }else{
+            gl.uniform1i(blurInputUniform, 1);
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, blur2Buffer);
+
+        gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+
+        gl.uniform1i(blurHorizontalUniform, 1);
+        gl.uniform1i(blurInputUniform, 0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, blur1Buffer);
+
+        gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 
 startGL();
@@ -853,10 +1076,10 @@ function draw(time){
         -Math.sin(-camRot), 0, Math.cos(-camRot), 0,
         0, 0, 0, 1]);
 
-
+    
     gl.useProgram(glowProgram);
     gl.uniformMatrix4fv(glowWorldUniform, false, camRotMat.getArray(true));
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    clear();
     Spark.sparks.forEach((spark) => {
         spark.update((time - oldTime) / 1000);
         spark.render();
@@ -871,8 +1094,6 @@ function draw(time){
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, lightArray);
 
     // Draw glow
-    gl.enable(gl.BLEND);
-    gl.disable(gl.DEPTH_TEST);
     
 	gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
@@ -880,7 +1101,25 @@ function draw(time){
     gl.bindVertexArray(glowVAB);
     gl.useProgram(glowProgram);
 
+    gl.bindFramebuffer(gl.FRAMEBUFFER, baseBuffer);
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, MAX_SPARK_COUNT);
+
+    blur(8);
+
+    gl.bindVertexArray(combineVAB);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.useProgram(combineProgram);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, baseImage);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, blur1Image);
+
+    gl.uniform1i(combineBaseUniform, 0);
+    gl.uniform1i(combineBloomUniform, 1);
+
+    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+
     gl.bindVertexArray(null);
 
     if(Math.random() < 0.025){
