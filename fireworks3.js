@@ -318,50 +318,42 @@ var modelArray = new Float32Array([
     0.25, 0.43
 ]);
 
+/**@type {WebGLTexture} */
 var baseImage;
+/**@type {WebGLTexture} */
 var lightImage;
+/**@type {WebGLFramebuffer} */
 var baseBuffer;
-
+/**@type {WebGLTexture} */
 var blur1Image;
+/**@type {WebGLTexture} */
 var blur2Image;
+/**@type {WebGLFramebuffer} */
 var blur1Buffer;
+/**@type {WebGLFramebuffer} */
 var blur2Buffer;
 
-
+/**@type {WebGLTexture[]} */
 var textures = [];
-var framebuffers = [];
-/**
- * @type {WebGLVertexArrayObject}
- */
- var glowVAB;
- /**
- * @type {WebGLVertexArrayObject}
- */
-  var blurVAB;
-/**
- * @type {WebGLVertexArrayObject}
- */
-    var combineVAB;
-/**
- *  @type {WebGLBuffer}
- */
+/** @type {WebGLFramebuffer[]} */
+var framebufferCollections = [];
+/** @type {WebGLVertexArrayObject}*/
+var glowVAB;
+/** @type {WebGLVertexArrayObject}*/
+var blurVAB;
+/** @type {WebGLVertexArrayObject}*/
+var combineVAB;
+/** @type {WebGLBuffer}*/
 var matrixBuffer;
-/**
-*  @type {WebGLBuffer}
-*/
+/** @type {WebGLBuffer}*/
 var lightBuffer;
-/**
- *  @type {WebGLBuffer}
- */
+/** @type {WebGLBuffer}*/
  var screenPosBuffer;
- /**
- *  @type {WebGLBuffer}
- */
-  var screenFaceBuffer;
-  /**
-  *  @type {WebGLBuffer}
-  */
+ /** @type {WebGLBuffer}*/
+var screenFaceBuffer;
+/** @type {WebGLBuffer}*/
 var modelBuffer;
+/** @type {WebGLProgram} */
 var glowProgram;
 var glowVertSource = `#version 300 es
 uniform mat4 world;
@@ -393,11 +385,12 @@ layout(location = 0) out vec4 o_color0;
 layout(location = 1) out vec4 o_color1;
 float light;
 void main(){
-    light = pow(_lum, _intsy);
-    o_color0 = vec4(_color * _lum, 1.0);
-    o_color1 = vec4( _color * _color * _color * _color * light, 1.0);
+    o_color0 = vec4(_color * clamp(_lum, 0.0, 1.0), 1.0);
+    o_color1 = vec4(_color * _color * clamp(_lum - 1.0, 0.0, 10.0) * _intsy, 1.0);
 }`;
+/** @type {WebGLProgram} */
 var blurProgram;
+/** @type {WebGLProgram} */
 var combineProgram;
 var screenVertSource = `#version 300 es
 in vec2 pos;
@@ -415,7 +408,7 @@ uniform bool u_horizontal;
 float weight[5] = float[] (0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
 vec2 offset;
 void main(){
-    float pixel_size = 2.0/float(textureSize(u_input, 0).x);
+    float pixel_size = 1.0/float(textureSize(u_input, 0).x);
     if(u_horizontal){
         offset = vec2(pixel_size, 0.0);
     }else{
@@ -441,14 +434,17 @@ void main(){
 }`;
 
 var cameraMat = Matrix.getIdenity(4);
-/**
- * @type {WebGLUniformLocation}
- */
+/** @type {WebGLUniformLocation} */
  var glowWorldUniform;
+ /** @type {WebGLUniformLocation} */
  var blurInputUniform;
+ /** @type {WebGLUniformLocation} */
  var blurWeightUniform;
+ /** @type {WebGLUniformLocation} */
  var blurHorizontalUniform;
+ /** @type {WebGLUniformLocation} */
  var combineBaseUniform;
+ /** @type {WebGLUniformLocation} */
  var combineBloomUniform;
 
 
@@ -504,6 +500,17 @@ function updateCanvasSize(){
     canvas.height = height;
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
     // update buffer sizes
+    framebufferCollections.forEach(buffer =>{
+        gl.bindFramebuffer(gl.FRAMEBUFFER, buffer);
+        var renderBuffer = gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME)
+        gl.bindRenderbuffer(gl.RENDERBUFFER, renderBuffer);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    })
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    textures.forEach(texture =>{
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.drawingBufferWidth, gl.drawingBufferHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+    })
     prepareCamera();
 }
 
@@ -626,10 +633,9 @@ function startGL(){
     lightImage = buildTexture();
 
     textures.push(baseImage, lightImage, blur1Image, blur2Image);
-
-    baseBuffer = gl.createFramebuffer();
-    blur1Buffer = gl.createFramebuffer();
-    blur2Buffer = gl.createFramebuffer();
+    baseBuffer = buildFramebuffer();
+    blur1Buffer = buildFramebuffer();
+    blur2Buffer = buildFramebuffer();
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, baseBuffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, baseImage, 0);
@@ -642,7 +648,7 @@ function startGL(){
     gl.bindFramebuffer(gl.FRAMEBUFFER, blur2Buffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, blur1Image, 0);
     
-    framebuffers.push(baseBuffer, blur1Buffer, blur2Buffer);
+    framebufferCollections.push(baseBuffer, blur1Buffer, blur2Buffer);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
@@ -653,7 +659,7 @@ function startGL(){
 function clear(){
     
     gl.clearColor(0, 0, 0, 0);
-    framebuffers.forEach((val) => {
+    framebufferCollections.forEach((val) => {
         gl.bindFramebuffer(gl.FRAMEBUFFER, val);
         gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
     })
@@ -672,11 +678,11 @@ function buildTexture(){
     return texture;
 }
 
-function buildBuffer(){
-    var buffer = gl.createBuffer();
+function buildFramebuffer(){
+    var buffer = gl.createFramebuffer();
     var depthBuffer = gl.createRenderbuffer();
 
-    gl.bindBuffer(gl.FRAMEBUFFER, buffer);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, buffer);
     gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
     gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
@@ -819,7 +825,7 @@ function Spark(type, time, size, x, y, z, vx, vy, vz, r, g, b, lum, insty, tags,
                     var nx = Math.random() * 30 - 15;
                     var ny = Math.random() * 30 - 15;
                     var nz = Math.random() * 30 - 15;
-                    Spark.getNewSpark(Spark.types.EMBER, Math.random() * 2, 4, x, y, z, nx, ny, nz, sr, sg, sb, 0.9, 10, null);
+                    Spark.getNewSpark(Spark.types.EMBER, Math.random() * 2, 4, x, y, z, nx, ny, nz, sr, sg, sb, 1.1, 10, null);
                 }
                 
                 vy -= deltaTime * 10;
@@ -854,7 +860,7 @@ function Spark(type, time, size, x, y, z, vx, vy, vz, r, g, b, lum, insty, tags,
                         var nx = v1.vx;
                         var ny = v1.vy;
                         var nz = v1.vz;
-                        var nSpark = Spark.getNewSpark(Spark.types.SPARK, Math.random(), 10, x, y, z, nx, ny, nz, sr, sg, sb, 1, 15, null);
+                        var nSpark = Spark.getNewSpark(Spark.types.SPARK, Math.random(), 10, x, y, z, nx, ny, nz, sr, sg, sb, 5, 15, null);
                         if(nSpark == null){
                             break;
                         } 
@@ -869,7 +875,7 @@ function Spark(type, time, size, x, y, z, vx, vy, vz, r, g, b, lum, insty, tags,
                     var nx = Math.random() * 30 - 15;
                     var ny = Math.random() * 30 - 15;
                     var nz = Math.random() * 30 - 15;
-                    Spark.getNewSpark(Spark.types.EMBER, Math.random(), 4, x, y, z, nx, ny, nz, sr, sg, sb, 0.9, 5, null);
+                    Spark.getNewSpark(Spark.types.EMBER, Math.random(), 4, x, y, z, nx, ny, nz, sr, sg, sb, 2.5, 5, null);
                 }
                 vy -= deltaTime * 10;
                 if(time < 0.25){
@@ -1125,7 +1131,7 @@ function draw(time){
     if(Math.random() < 0.025){
         var color = getRandomVector(1);
         
-        Spark.getNewSpark(Spark.types.ROCKET, 5, 10, Math.random() * 100 - 50, -height / 2, Math.random() * 100 - 50, Math.random() * 50 - 25, Math.random() * 500 + 50, Math.random() * 50 - 25, Math.abs(color.vx), Math.abs(color.vy), Math.abs(color.vz), 1, 20, null);
+        Spark.getNewSpark(Spark.types.ROCKET, 5, 10, Math.random() * 100 - 50, -height / 2, Math.random() * 100 - 50, Math.random() * 50 - 25, Math.random() * 500 + 50, Math.random() * 50 - 25, Math.abs(color.vx), Math.abs(color.vy), Math.abs(color.vz), 5, 20, null);
 
     }
     oldTime = time;
